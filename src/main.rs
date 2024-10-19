@@ -20,12 +20,16 @@ s
 fn main(){
   
   let server:String = ask("Server: ");
+  
   let username:String = ask("Username: ");
   let password:String = ask("Password: ");
 
-  let result = nebula::login_to_nebula(server,username,password);
+  let result = nebula::login(server,username,password);
   match result.is_logged_in{
-    true=> println!("Logged in, refresh token: {}",result.refresh_token),
+    true=> {
+      println!("Logged in, ProfileId: {}\nToken: {}",result.profile_id,result.access_token);
+      
+    },
     false => println!("Could not login in!")
   }
 
