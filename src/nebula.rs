@@ -1,14 +1,16 @@
-use std::{io::{Read, Write}, net::TcpStream};
+use std::collections::HashMap;
 
-use native_tls::TlsConnector;
 use url::form_urlencoded;
 use base64::decode;
-const USASERVERS:[&str;4] = ["AU","NZ","CA","US"];
+
+use crate::simplehttp::{extract_json_value, SimpleHTTP};
+pub const USASERVERS:[&str;4] = ["AU","NZ","CA","US"];
 pub struct LoginResult{
     pub is_logged_in:bool,
     pub access_token:String,
     pub refresh_token:String,
-    pub profile_id:String
+    pub profile_id:String,
+    pub server:String
 }
 
 impl Default for LoginResult{
@@ -17,7 +19,8 @@ impl Default for LoginResult{
             is_logged_in:false,
             access_token: String::new(),
             refresh_token: String::new(),
-            profile_id: String::new()
+            profile_id: String::new(),
+            server: String::new()
         }
     }
 }
@@ -32,26 +35,12 @@ fn get_json_string(string: String) -> Result<String, ()> {
 
     Err(())
 }
-fn extract_token(json_str: &str, key: &str) -> Option<String> {
 
-    let key_pattern = format!("\"{}\":\"", key);
-
-    if let Some(start) = json_str.find(&key_pattern) {
-
-        let token_start = start + key_pattern.len();
-
-        if let Some(end) = json_str[token_start..].find('\"') {
-            return Some(json_str[token_start..token_start + end].to_string());
-        }
-    }
-
-    None
-}
 
 fn get_tokens_from_json(json_str: &str) -> Result<(String, String), &'static str> {
-    let access_token = extract_token(json_str, "access_token").ok_or("Missing access_token")?;
+    let access_token = extract_json_value(json_str, "access_token").ok_or("Missing access_token")?;
 
-    let refresh_token = extract_token(json_str, "refresh_token").ok_or("Missing refresh_token")?;
+    let refresh_token = extract_json_value(json_str, "refresh_token").ok_or("Missing refresh_token")?;
 
     Ok((access_token, refresh_token))
 }
@@ -76,40 +65,39 @@ fn get_profile_id_from_token(server:&String,token:&String)->String{
     let login_id = login_id_from_access_token(token);
     let endpoint_region:&str;
     if USASERVERS.contains(&server.as_str())  {endpoint_region = "us";} else {endpoint_region="eu";}
-    let mut res = vec![];
+    
 
-    let connector = TlsConnector::new().unwrap();
-    let stream = TcpStream::connect(format!("{}.mspapis.com:443",endpoint_region)).expect("Could not connect to BSP server [TCP]");
-    let mut stream = connector.connect(format!("{}.mspapis.com",endpoint_region).as_str(), stream).expect("Could not connect to BSP server [TLS]");
-
-    let formated =format!("GET /profileidentity/v1/logins/{}/profiles HTTP/1.1\r\nHost: {}.mspapis.com\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",login_id,endpoint_region,token);
-  
-    stream.write_all(formated.as_bytes()).expect("Could not write to BSP server!");
-    stream.read_to_end(&mut res).expect("Could not read from BSP server!");
+    let mut headers: HashMap<&str, &str> = HashMap::new();
+    let temp =format!("Bearer {}",token);
+    headers.insert("Authorization", temp.as_str());
+    let mut http = SimpleHTTP::new(format!("{}.mspapis.com",endpoint_region).as_str());
+    let res = http.do_https_request(format!("/profileidentity/v1/logins/{}/profiles",login_id).as_str(), "GET", Some(headers), None).unwrap_or_else(|error|{
+        eprintln!("ERROR {}",error);
+        return vec![];
+    });
     let response = String::from_utf8_lossy(&res).to_string();
+  
     let json = get_json_string(response).expect("Request failed!");
-    let profile_id = extract_token(json.as_str(), "id").ok_or("Could not get profileid!").unwrap();
+    let profile_id = extract_json_value(json.as_str(), "id").ok_or("Could not get profileid!").unwrap();
     return profile_id;
 }
 fn login_to_nebula(server:&String,username:&String, password:&String)->LoginResult{
     let endpoint_region:&str;
     if USASERVERS.contains(&server.as_str())  {endpoint_region = "us";} else {endpoint_region="eu";}
-    let mut res = vec![];
-{
-    let connector = TlsConnector::new().unwrap();
-    let stream = TcpStream::connect(format!("{}-secure.mspapis.com:443",endpoint_region)).expect("Could not connect to BSP server [TCP]");
-    let mut stream = connector.connect(format!("{}-secure.mspapis.com",endpoint_region).as_str(), stream).expect("Could not connect to BSP server [TLS]");
-
+  
     let urlencodedusername:String= form_urlencoded::byte_serialize(username.as_bytes()).collect();
     let urlencodedpassword:String= form_urlencoded::byte_serialize(password.as_bytes()).collect();
    
     let formencodedcontent:String = format!("client_id=unity.client&grant_type=password&username={}{}&password={}&acr_values=gameId%3Aywru",server.to_owned()+"|",urlencodedusername,urlencodedpassword);
-    let formated =format!("POST /loginidentity/connect/token HTTP/1.1\r\nHost: {}-secure.mspapis.com\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length:{}\r\nConnection: close\r\n\r\n{}",endpoint_region,formencodedcontent.len(),formencodedcontent);
   
-    stream.write_all(formated.as_bytes()).expect("Could not write to BSP server!");
-    stream.read_to_end(&mut res).expect("Could not read from BSP server!");
-    
-}
+    let mut http = SimpleHTTP::new(format!("{}-secure.mspapis.com",endpoint_region).as_str());
+    let mut headers: HashMap<&str, &str> = HashMap::new();
+    headers.insert("Content-Type", "application/x-www-form-urlencoded");
+    let res = http.do_https_request("/loginidentity/connect/token", "POST", Some(headers), Some(formencodedcontent.as_bytes())).unwrap_or_else(|error|{
+        eprintln!("ERROR {}",error);
+        return vec![];
+    });
+
     let response = String::from_utf8_lossy(&res).to_string();
     let json = get_json_string(response).expect("Request failed!");
    
@@ -127,21 +115,22 @@ fn login_to_nebula(server:&String,username:&String, password:&String)->LoginResu
   fn refresh_token(server:&String,data:&mut LoginResult){
     let endpoint_region:&str;
     if USASERVERS.contains(&server.as_str())  {endpoint_region = "us";} else {endpoint_region="eu";}
-    let mut res = vec![];
-{
-    let connector = TlsConnector::new().unwrap();
-    let stream = TcpStream::connect(format!("{}-secure.mspapis.com:443",endpoint_region)).expect("Could not connect to BSP server [TCP]");
-    let mut stream = connector.connect(format!("{}-secure.mspapis.com",endpoint_region).as_str(), stream).expect("Could not connect to BSP server [TLS]");
 
     let formencodedcontent:String = format!("grant_type=refresh_token&refresh_token={}&acr_values=gameId%3aywru%20profileId%3a{}",data.refresh_token,data.profile_id);
-    let formated =format!("POST /loginidentity/connect/token HTTP/1.1\r\nHost: {}-secure.mspapis.com\r\nAuthorization: Basic dW5pdHkuY2xpZW50OnNlY3JldA==\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length:{}\r\nConnection: close\r\n\r\n{}",endpoint_region,formencodedcontent.len(),formencodedcontent);
-  
-    stream.write_all(formated.as_bytes()).expect("Could not write to BSP server!");
-    stream.read_to_end(&mut res).expect("Could not read from BSP server!");
+
+    let mut http = SimpleHTTP::new(format!("{}-secure.mspapis.com",endpoint_region).as_str());
+    let mut headers: HashMap<&str, &str> = HashMap::new();
+    headers.insert("Content-Type", "application/x-www-form-urlencoded");
+    headers.insert("Authorization", "Basic dW5pdHkuY2xpZW50OnNlY3JldA==");
+    let res = http.do_https_request("/loginidentity/connect/token", "POST", Some(headers), Some(formencodedcontent.as_bytes())).unwrap_or_else(|error|{
+        eprintln!("ERROR {}",error);
+        return vec![];
+    });
     
-}
+
+    
     let response = String::from_utf8_lossy(&res).to_string();
- 
+  
     let json = get_json_string(response).expect("Request failed!");
    
         let tokens = get_tokens_from_json(json.as_str());
@@ -162,5 +151,6 @@ fn login_to_nebula(server:&String,username:&String, password:&String)->LoginResu
     }
     result.profile_id = get_profile_id_from_token(&server, &result.access_token);
     refresh_token(&server, &mut result);
+    result.server = server;
     result
   }

@@ -1,8 +1,11 @@
 
 
 use std::{f64::INFINITY,  io::prelude::*, thread, time::Duration};
-mod nebula;
 
+use bsp::SimpleFOX;
+mod nebula;
+mod bsp;
+mod simplehttp;
 fn ask(msg:&str)->String{
   use std::io::{stdin,stdout};
   print!("{}",msg);
@@ -27,7 +30,8 @@ fn main(){
   let result = nebula::login(server,username,password);
   match result.is_logged_in{
     true=> {
-      println!("Logged in, ProfileId: {}\nToken: {}",result.profile_id,result.access_token);
+      println!("Logged in, ProfileId: {}",result.profile_id);
+      let fox = SimpleFOX::new(result);
       
     },
     false => println!("Could not login in!")
